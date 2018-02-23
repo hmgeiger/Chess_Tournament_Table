@@ -1,0 +1,302 @@
+# Summarizing Chess Tournament Info using R and Regular Expressions
+### Heather Geiger
+### February 23, 2018
+
+## Reading in the data
+
+To start, we read in the data in a way that each line is treated as one string.
+
+Then, we use as.vector to make the result a vector instead of a data frame.
+
+```{r}
+#Set working directory to the directory you are currently in, which presumably will be where you downloaded this script and the text file.
+setwd(getwd())
+#Read in text file.
+info <- as.vector(read.table("tournamentinfo.txt",quote="",comment.char="",sep="\n")$V1)
+length(info)
+head(info)
+tail(info)
+```
+
+## Light pre-processing
+
+Now, remove the lines that are all dashes.
+
+For this we use the grep function, returning content of lines NOT matching a regex for a line of all dashes.
+
+```{r}
+library(stringr)
+info <- grep('^-+$',info,invert=TRUE,perl=TRUE,value=TRUE)
+length(info)
+```
+
+Set aside the first two items in info, as these were the headers.
+
+```{r}
+info_headers <- info[1:2]
+info <- info[3:length(info)]
+```
+
+Really every two lines were a record. Let's separate the first line in each record from the second line.
+
+```{r}
+first_lines_of_records <- info[seq(from=1,to=(length(info) - 1),by=2)]
+second_lines_of_records <- info[seq(from=2,to=length(info),by=2)]
+length(first_lines_of_records);head(first_lines_of_records);tail(first_lines_of_records)
+length(second_lines_of_records);head(second_lines_of_records);tail(second_lines_of_records)
+```
+
+## Separating by field and selecting the correct fields
+
+Now, we want to get each field from first_lines_of_records and second_lines_of_records.
+
+Then, the information we want will be contained within different fields in either first line or second line.
+
+Fields are separated by dashes.
+
+```{r}
+first_lines_of_records_separate_fields <- str_split(first_lines_of_records,"\\|")
+second_lines_of_records_separate_fields <- str_split(second_lines_of_records,"\\|")
+
+#The first field from first lines of records gives the player number.
+#Remove leading and trailing whitespace using base R trimws function to get the number by itself.
+#In this case player_ids are in numerical order, but this might not always be the case so good to do.
+
+player_ids <- unlist(lapply(first_lines_of_records_separate_fields,"[[",1))
+player_ids <- trimws(player_ids)
+
+#Repeat similar procedure for other fields.
+#For some others like name, we'll need to do some additional processing after. 
+#But at least good to extract each field into a vector for now.
+
+player_names <- unlist(lapply(first_lines_of_records_separate_fields,"[[",2))
+player_names <- trimws(player_names)
+
+player_states <- trimws(unlist(lapply(second_lines_of_records_separate_fields,"[[",1)))
+
+total_points <- trimws(unlist(lapply(first_lines_of_records_separate_fields,"[[",3)))
+
+ratings <- trimws(unlist(lapply(second_lines_of_records_separate_fields,"[[",2)))
+
+#Show all these vectors.
+
+player_ids
+player_names
+player_states
+total_points
+ratings
+```
+
+## Processing the name field
+
+The name and ratings fields require additional processing.
+
+Let's focus on the name field first.
+
+We'll want to have only the first letter of names be capitalized instead of the whole name.
+
+It might be nice to add a period after initials and suffixes like Jr.
+
+Finally, it seems there is a space in between for some last names that have two capitalized letters (like MC CORMICK for McCormick).
+
+There also seems to be an error for one name. Assuming MC CORMICK is actually for McCormick, MCCLURE should be MC CLURE.
+
+Let's start with last names.
+
+```{r}
+#First step - fix the McClure error.
+
+player_names <- str_replace(player_names,pattern='MCCLURE',replace='MC CLURE')
+
+#Now, create a version of player_names split by whitespace.
+player_names_split <- str_split(player_names,"[[:blank:]]+")
+
+#Now, we are going to create a few logical vectors looking for various things that will affect how we paste together names.
+#Start by checking the number of "words" in each name. A lot of the tests we need to run only apply if there are more than two.
+
+number_name_fields <- unlist(lapply(player_names_split,function(x)length(x)))
+
+#If there are 3+ names, check the next-to-last for "MC".
+#Extract next-to-last name using the "word" function.
+
+two_capitals_last_name <- rep(FALSE,times=length(player_names))
+two_capitals_last_name[which(number_name_fields >= 3 & word(player_names,-2) == "MC")] <- TRUE
+
+#Next, check for Jr. suffix, as well as hypenated last name.
+junior_suffix <- rep(FALSE,times=length(player_names))
+junior_suffix[which(number_name_fields >= 3 & word(player_names,-1) == "JR")] <- TRUE
+
+hyphenated_last_name <- str_detect(word(player_names,-1),'\\-')
+
+#Now, let's get each last name with only the appropriate letters capitalized.
+#For Jr. suffix, paste this to the second-to-last "word" in the name.
+#Use the capitalize function from the Hmisc package to capitalize the first letter of each "word".
+#Capitalize function used as suggested here: https://stackoverflow.com/questions/6364783/capitalize-the-first-letter-of-both-words-in-a-two-word-string.
+#Combining this with the "tolower" function so only the first letter capitalized instead of the whole thing.
+
+library(Hmisc)
+
+last_names <- capitalize(tolower(word(player_names,-1)))
+last_names[which(two_capitals_last_name == TRUE)] <- paste0("Mc",last_names[which(two_capitals_last_name == TRUE)])
+last_names[which(junior_suffix == TRUE)] <- paste0(capitalize(tolower(word(player_names[which(junior_suffix == TRUE)],-2)))," Jr.")
+for(i in which(hyphenated_last_name == TRUE))
+{
+this_last_name_split_by_hyphen <- unlist(str_split(last_names[i],"-"))
+last_names[i] <- paste0(this_last_name_split_by_hyphen[1],"-",capitalize(this_last_name_split_by_hyphen[2]))
+}
+
+#Let's check our work.
+
+data.frame(Full.name = player_names,Last.name = last_names)
+
+```
+
+Looks good! Now we need to get just the first and middle names/initials.
+
+```{r}
+first_names <- capitalize(tolower(word(player_names,1)))
+
+#Adjust number_name_fields to subtract one for two_capitals_last_name or junior_suffix.
+number_name_fields_adjusted <- number_name_fields
+number_name_fields_adjusted[which(two_capitals_last_name == TRUE | junior_suffix == TRUE)] <- number_name_fields_adjusted[which(two_capitals_last_name == TRUE | junior_suffix == TRUE)] - 1
+
+#After adjustment, how many name fields total are there?
+
+table(number_name_fields_adjusted)
+
+#Looks like no one has two middle names.
+#So we can either say that there is no middle name or initial if number_name_fields_adjusted = 2, or there is a middle name or initial if number_name_fields_adjusted = 3.
+
+#If number_name_fields_adjusted = 3, the middle name or initial will be the second name.
+
+middle_names_or_initials <- rep("",times=length(player_names))
+middle_names_or_initials[which(number_name_fields_adjusted == 3)] <- word(player_names[which(number_name_fields_adjusted == 3)],2)
+
+#If middle is just a single letter, assume it is an initial and add a period.
+#Otherwise, capitalize only the first letter.
+
+middle_names_or_initials[which(nchar(middle_names_or_initials) == 1)] <- paste0(middle_names_or_initials[which(nchar(middle_names_or_initials) == 1)],".")
+middle_names_or_initials[which(nchar(middle_names_or_initials) > 1)] <- capitalize(tolower(middle_names_or_initials[which(nchar(middle_names_or_initials) > 1)]))
+
+middle_names_or_initials
+```
+
+Think we are good to go! Combine the first/middle/last information.
+
+Then check everything at once versus the original names to see if it all looks right.
+
+```{r}
+player_names_reformatted <- paste0(first_names," ",middle_names_or_initials," ",last_names)
+player_names_reformatted
+
+#Looks like an extra space gets added if there is no middle name or initial. Let's fix this.
+
+player_names_reformatted[which(nchar(middle_names_or_initials) == 0)] <- paste0(first_names[which(nchar(middle_names_or_initials) == 0)]," ",last_names[which(nchar(middle_names_or_initials) == 0)])
+
+data.frame(Original = player_names,Reformat = player_names_reformatted)
+```
+
+## Processing the ratings field
+
+For the ratings field, we can simplify a lot by taking everything before the arrow "->".
+
+This is because we are interested in pre-ratings only.
+
+Once we get everything before the "->", take the last part of THAT, which will always be after a colon.
+
+```{r}
+ratings <- str_split(ratings,'->')
+ratings <- unlist(lapply(ratings,"[[",1))
+ratings <- trimws(ratings,which="right")
+ratings
+ratings <- str_split(ratings,":")
+ratings <- trimws(unlist(lapply(ratings,"[[",2)))
+ratings
+```
+
+Finally, if there is any provisional notation, remove this by taking only the part before the "P" where appropriate.
+
+```{r}
+ratings <- str_split(ratings,"P")
+ratings <- unlist(lapply(ratings,"[[",1))
+ratings
+```
+
+Looks good! We'll need to convert to numeric, but we can do that later when we are assembling the data frame.
+
+## Getting opponent player numbers
+
+We'll need to process the remaining fields in first_lines_of_records_separate_fields (4th and onward) to get the player numbers of each player's opponents.
+
+First, get just these values from first_lines_of_records_separate_fields. These will be fields 4-10.
+
+```{r}
+players_per_round <- lapply(first_lines_of_records_separate_fields,"[",4:10)
+```
+
+Now, use the word function from stringr to get the last "word" of each value in player_per_round.
+
+We combine this with the trimws function so we will always extract either a number or a letter, never an empty string.
+
+```{r}
+players_per_round <- lapply(players_per_round,function(x)word(trimws(x),-1))
+```
+
+Finally, we extract only numbers, not letters.
+
+Use the "+" to extract two-digit numbers as one string.
+
+```{r}
+players_per_round <- lapply(players_per_round,function(x)unlist(str_extract_all(x,'\\d+')))
+```
+
+Let's paste this together with the original strings to check our work.
+
+```{r}
+original_strings_for_players_per_round <- lapply(first_lines_of_records_separate_fields,"[",4:10)
+original_strings_for_players_per_round <- unlist(lapply(original_strings_for_players_per_round,function(x)paste0(x,collapse=",")))
+players_per_round_as_vector <- unlist(lapply(players_per_round,function(x)paste0(x,collapse=",")))
+data.frame(Original.string = original_strings_for_players_per_round,New.string = players_per_round_as_vector)
+```
+
+Looks good!
+
+## Putting it all together
+
+Now, we need to use players_per_round to get the average pre-rating for the other players.
+
+Then, combine this information with all the other information we need.
+
+```{r}
+ratings <- as.numeric(ratings)
+
+mean_rating_other_players <- c()
+
+for(i in 1:length(players_per_round))
+{
+players_per_round[[i]] <- as.numeric(players_per_round[[i]])
+mean_rating_other_players <- c(mean_rating_other_players,mean(ratings[players_per_round[[i]]]))
+}
+
+mean_rating_other_players <- round(mean_rating_other_players,digits=0)
+
+data_frame_for_csv <- data.frame(Player.name = player_names_reformatted,
+	State = player_states,
+	Total.points = as.numeric(total_points),
+	Pre.rating = ratings,
+	Average.pre.rating.opponents = mean_rating_other_players,
+	stringsAsFactors=FALSE)
+
+#Increase display width a bit so we can see everything side-by-side.
+options(width=100)
+data_frame_for_csv
+```
+
+Finally, let's change column names, then print to a CSV file.
+
+```{r}
+colnames(data_frame_for_csv) <- c("Player’s Name","Player’s State","Total Number of Points","Player’s Pre-Rating","Average Pre-Chess Rating of Opponents")
+write.table(data_frame_for_csv,
+	file="tournamentinfo_processed.csv",
+	row.names=FALSE,col.names=TRUE,quote=TRUE,sep=",")
+```
